@@ -39,7 +39,7 @@
   ],
   "author": "0xDragoon",
   "license": "MIT",
-  "repository": { "type": "git", "url": "https://github.com/0xDragoon/tapeui" },
-  "homepage": "homepage": "https://dragoon0x.github.io/tapeui/",
+  "repository": { "type": "git", "url": "https://github.com/dragoon0x/tapeui" },
+  "homepage": "https://dragoon0x.github.io/tapeui/",
   "sideEffects": false
 }
