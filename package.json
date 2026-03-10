@@ -1,5 +1,5 @@
 {
-  "name": "tapeui",
+  "name": "@dragoon0x/tapeui"
   "version": "0.1.0",
   "description": "Record design critiques by talking and clicking. Voice gets transcribed, clicks get pinned to selectors with computed styles. Output is a structured review your AI agent can action.",
   "main": "dist/index.js",
