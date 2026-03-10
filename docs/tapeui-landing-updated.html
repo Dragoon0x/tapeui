@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TAPE — Voice-driven design critique</title>
+  <meta name="description" content="Record design critiques by talking and clicking. Voice gets transcribed, clicks get pinned to selectors with computed styles. Output is a structured review your AI agent can action.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *,*::before,*::after{margin:0;padding:0;box-sizing:border-box}
+    :root{
+      --bg:#ffffff;--bg2:#f9f9f9;--bg3:#f3f3f3;
+      --border:#e8e8e8;--border2:#d0d0d0;
+      --dim:#999;--text:#555;--bright:#0a0a0a;--muted:#bbb;
+      --red:#ef4444;--green:#22c55e;--yellow:#eab308;--blue:#3b82f6;
+      --mono:'JetBrains Mono',monospace;
+      --sans:'Inter',-apple-system,sans-serif;
+    }
+    html{scroll-behavior:smooth}
+    body{font-family:var(--sans);background:var(--bg);color:var(--text);line-height:1.7;font-size:15px;-webkit-font-smoothing:antialiased;overflow-x:hidden}
+    ::selection{background:rgba(0,0,0,.07)}
+
+    .topbar{position:fixed;top:0;left:0;right:0;z-index:100;padding:14px 28px;display:flex;justify-content:space-between;align-items:center;backdrop-filter:blur(20px);background:rgba(255,255,255,.88);border-bottom:1px solid var(--border)}
+    .topbar-logo{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.2em;text-transform:uppercase;color:var(--bright);text-decoration:none;display:flex;align-items:center;gap:8px}
+    .topbar-dot{width:5px;height:5px;border-radius:50%;background:var(--red)}
+    .topbar-right{display:flex;gap:10px;align-items:center}
+    .topbar-btn{font-family:var(--mono);font-size:9px;padding:6px 14px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--dim);cursor:pointer;text-transform:uppercase;letter-spacing:.06em;transition:all .2s}
+    .topbar-btn:hover{border-color:var(--bright);color:var(--bright)}
+    .topbar-shortcut{font-family:var(--mono);font-size:9px;color:var(--dim);padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--bg2)}
+
+    .container{max-width:680px;margin:0 auto;padding:0 28px;position:relative;z-index:1}
+
+    .hero{padding:200px 0 100px;text-align:center}
+    .hero-badge{font-family:var(--mono);font-size:9px;text-transform:uppercase;letter-spacing:.3em;color:var(--dim);margin-bottom:32px;opacity:0;animation:fi .6s ease forwards .2s}
+    .hero h1{font-size:clamp(38px,6.5vw,56px);font-weight:700;line-height:1.08;color:var(--bright);margin-bottom:24px;letter-spacing:-.02em;opacity:0;animation:fu .8s ease forwards .35s}
+    .hero h1 span{color:var(--dim)}
+    .hero-sub{font-size:16px;font-weight:400;color:var(--dim);max-width:480px;margin:0 auto 44px;line-height:1.7;opacity:0;animation:fu .7s ease forwards .55s}
+    .hero-install{display:inline-flex;align-items:center;gap:10px;font-family:var(--mono);font-size:12px;color:var(--text);padding:10px 18px;border:1px solid var(--border);border-radius:8px;background:var(--bg);cursor:pointer;transition:all .2s;opacity:0;animation:fu .6s ease forwards .7s}
+    .hero-install:hover{border-color:var(--bright);color:var(--bright);box-shadow:0 2px 12px rgba(0,0,0,.06)}
+    .hero-install .tag{font-size:8px;color:var(--muted);border:1px solid var(--border);padding:1px 5px;border-radius:3px}
+
+    @keyframes fi{from{opacity:0}to{opacity:1}}
+    @keyframes fu{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+
+    section{padding:64px 0;border-top:1px solid var(--border)}
+    section h2{font-size:26px;font-weight:600;color:var(--bright);margin-bottom:10px;letter-spacing:-.01em}
+    section p{color:var(--text);font-size:14.5px;margin-bottom:16px;line-height:1.75}
+    section p code{font-family:var(--mono);font-size:11px;background:var(--bg2);padding:2px 6px;border-radius:4px;border:1px solid var(--border);color:var(--bright)}
+
+    pre{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:18px 20px;overflow-x:auto;margin:0 0 20px;font-family:var(--mono);font-size:12px;line-height:1.7;color:var(--text)}
+    pre .kw{color:var(--bright);font-weight:500}
+    pre .fn{color:#555}
+    pre .str{color:#777}
+    pre .cmt{color:var(--muted);font-style:italic}
+    pre .comp{color:var(--bright);font-weight:600}
+
+    /* ─── Demo ────────── */
+    .demo{margin:24px 0;display:flex;gap:10px}
+    .demo-left{flex:1.2;min-width:0}
+    .demo-right{width:260px;flex-shrink:0}
+
+    .demo-label{font-family:var(--mono);font-size:9px;color:var(--muted);text-transform:uppercase;letter-spacing:.12em;margin-bottom:8px}
+
+    /* Simulated app */
+    .sim{border:1px solid var(--border);border-radius:10px;overflow:hidden;background:var(--bg)}
+    .sim-nav{display:flex;justify-content:space-between;align-items:center;padding:10px 16px;border-bottom:1px solid var(--border);background:var(--bg2)}
+    .sim-nav-logo{font-weight:700;font-size:13px;color:var(--bright)}
+    .sim-body{padding:20px 16px}
+    .sim-el{padding:10px 12px;border:1px solid transparent;border-radius:6px;cursor:pointer;transition:all .15s;margin-bottom:8px;position:relative}
+    .sim-el:hover{border-color:var(--border2);background:var(--bg2)}
+    .sim-el.clicked{border-color:var(--red);background:rgba(239,68,68,.03)}
+    .sim-el h3{font-size:18px;font-weight:800;color:var(--bright);margin-bottom:2px;line-height:1.35}
+    .sim-el p{font-size:12px;color:var(--dim);margin:0;line-height:1.5}
+    .sim-el .btn{display:inline-block;padding:7px 18px;background:#222;color:#fff;border-radius:3px;font-size:11px;font-weight:500;margin-top:4px}
+    .sim-el .card-grid{display:flex;gap:8px}
+    .sim-el .mini-card{flex:1;padding:10px;border:1px solid var(--border);border-radius:4px;background:var(--bg2)}
+    .sim-el .mini-card h4{font-size:11px;font-weight:600;color:var(--bright);margin-bottom:2px}
+    .sim-el .mini-card p{font-size:9px}
+    .sim-click-dot{position:absolute;top:6px;right:6px;width:6px;height:6px;border-radius:50%;background:var(--red);opacity:0;transition:opacity .2s}
+    .sim-el.clicked .sim-click-dot{opacity:1}
+
+    /* Simulated panel (dark) */
+    .panel{background:#0a0a0e;border:1px solid #1c1c24;border-radius:10px;overflow:hidden;font-family:var(--mono);font-size:10px;color:#909098}
+    .panel-header{display:flex;align-items:center;gap:6px;padding:7px 10px;border-bottom:1px solid #1c1c24;background:rgba(0,0,0,.2)}
+    .panel-header .rec-dot{width:6px;height:6px;border-radius:50%;background:#ef4444}
+    .panel-header .title{font-weight:600;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:#e0e0e8}
+    .panel-body{padding:8px;max-height:420px;overflow-y:auto}
+
+    .p-card{background:#111116;border:1px solid #1c1c24;border-radius:5px;padding:8px;margin-bottom:5px}
+    .p-card-title{font-size:7px;font-weight:600;text-transform:uppercase;letter-spacing:.1em;color:#505060;margin-bottom:4px}
+
+    .p-comment{background:#111116;border:1px solid #1c1c24;border-radius:5px;padding:6px 8px;margin-bottom:3px;display:flex;align-items:flex-start;gap:5px}
+    .p-badge{padding:1px 4px;border-radius:2px;font-size:6px;text-transform:uppercase;letter-spacing:.04em;flex-shrink:0;margin-top:1px}
+    .p-sel{color:#60a5fa;font-size:8px;margin-bottom:1px}
+    .p-txt{color:#e0e0e8;font-size:9px;line-height:1.5}
+    .p-time{color:#505060;font-size:7px;margin-left:auto;flex-shrink:0}
+
+    .p-export{background:#080810;border-radius:4px;padding:6px;font-size:7.5px;line-height:1.6;color:#505060;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto;margin-top:4px}
+
+    .feat-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0 24px}
+    .feat-card{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:16px;text-align:center}
+    .feat-card h4{font-family:var(--mono);font-size:10px;color:var(--bright);text-transform:uppercase;letter-spacing:.06em;margin-bottom:4px}
+    .feat-card p{font-size:10.5px;color:var(--dim);line-height:1.5;margin:0}
+
+    .step-row{display:flex;gap:8px;margin:20px 0 28px}
+    .step{flex:1;text-align:center;padding:16px 10px;border:1px solid var(--border);border-radius:10px}
+    .step .num{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--bright);margin-bottom:4px}
+    .step h4{font-size:11px;font-weight:600;color:var(--bright);margin-bottom:2px}
+    .step p{font-size:10px;color:var(--dim);line-height:1.4;margin:0}
+
+    .tbl{width:100%;border-collapse:separate;border-spacing:0;margin:14px 0 20px;border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .tbl th,.tbl td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--border);font-size:12px}
+    .tbl th{background:var(--bg2);font-family:var(--mono);font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--dim)}
+    .tbl td:first-child{font-family:var(--mono);color:var(--bright);font-size:11px;font-weight:500}
+    .tbl td:nth-child(2){font-family:var(--mono);color:var(--dim);font-size:10.5px}
+    .tbl tr:last-child td{border-bottom:none}
+
+    footer{border-top:1px solid var(--border);padding:44px 0;text-align:center}
+    footer p{color:var(--muted);font-size:12px}
+    @media(max-width:700px){.demo{flex-direction:column}.demo-right{width:100%}.container{padding:0 16px}.hero{padding:140px 0 60px}.feat-grid{grid-template-columns:1fr}.step-row{flex-direction:column}}
+  </style>
+</head>
+<body>
+
+<nav class="topbar">
+  <a href="#" class="topbar-logo"><div class="topbar-dot"></div>TAPE</a>
+  <div class="topbar-right">
+    <span class="topbar-shortcut">Alt + T</span>
+    <button class="topbar-btn" onclick="copyInstall()">npm install @dragoon0x/tapeui</button>
+  </div>
+</nav>
+
+<div class="container">
+
+  <section class="hero" style="border:none">
+    <div class="hero-badge">Open Source npm Package</div>
+    <h1>Talk to your UI.<br><span>It takes notes.</span></h1>
+    <p class="hero-sub">Stop typing design feedback. Hit record, start talking, click the elements that bother you. TAPE transcribes your voice, pins each comment to a CSS selector with computed styles attached, and exports a structured critique your agent can action.</p>
+    <div class="hero-install" onclick="copyInstall()">
+      <span>npm install @dragoon0x/tapeui</span>
+      <span class="tag" id="copyTag">copy</span>
+    </div>
+  </section>
+
+  <!-- Interactive Demo -->
+  <section>
+    <h2>Try it</h2>
+    <p>Click any element in the simulated app. Watch the comment appear in the panel with the element pinned. This is what a 30-second recording session looks like.</p>
+
+    <div class="demo">
+      <div class="demo-left">
+        <div class="demo-label">Click elements to critique them</div>
+        <div class="sim">
+          <div class="sim-nav">
+            <span class="sim-nav-logo">dashflow</span>
+          </div>
+          <div class="sim-body">
+            <div class="sim-el" data-idx="0" onclick="clickEl(this, 0)">
+              <div class="sim-click-dot"></div>
+              <h3>Your workspace at a glance</h3>
+              <p>Track projects, manage tasks, and collaborate with your team in real time.</p>
+            </div>
+            <div class="sim-el" data-idx="1" onclick="clickEl(this, 1)">
+              <div class="sim-click-dot"></div>
+              <span class="btn">Get started free</span>
+            </div>
+            <div class="sim-el" data-idx="2" onclick="clickEl(this, 2)">
+              <div class="sim-click-dot"></div>
+              <div class="card-grid">
+                <div class="mini-card"><h4>Projects</h4><p>12 active</p></div>
+                <div class="mini-card"><h4>Tasks</h4><p>47 open</p></div>
+                <div class="mini-card"><h4>Team</h4><p>8 members</p></div>
+              </div>
+            </div>
+            <div class="sim-el" data-idx="3" onclick="clickEl(this, 3)">
+              <div class="sim-click-dot"></div>
+              <p style="font-size:10px;color:#bbb">Built with care. Shipped with confidence. Trusted by 2,400 teams.</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="demo-right">
+        <div class="demo-label">TAPE panel</div>
+        <div class="panel">
+          <div class="panel-header">
+            <span class="rec-dot" id="recDot"></span>
+            <span class="title">TAPE</span>
+            <span style="color:#505060;font-size:8px;margin-left:auto" id="panelTime">0:00</span>
+          </div>
+          <div class="panel-body" id="panelBody">
+            <div class="p-card">
+              <div class="p-card-title">Click elements in the app</div>
+              <div style="font-size:9px;color:#505060;line-height:1.5">Each click simulates you talking + clicking during a recording. Comments appear here with element context.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- How it works -->
+  <section>
+    <h2>30 seconds to a structured critique</h2>
+    <div class="step-row">
+      <div class="step"><div class="num">1</div><h4>Record</h4><p>Hit record. TAPE starts listening via Web Speech API and capturing clicks.</p></div>
+      <div class="step"><div class="num">2</div><h4>Talk + click</h4><p>"This padding is too aggressive." Click. "Love this shadow." Click. Natural flow.</p></div>
+      <div class="step"><div class="num">3</div><h4>Stop</h4><p>TAPE merges voice segments with click targets. Each comment gets pinned to a selector.</p></div>
+      <div class="step"><div class="num">4</div><h4>Export</h4><p>Copy as agent instructions, markdown, or JSON. Paste into your agent. It executes your critique.</p></div>
+    </div>
+  </section>
+
+  <!-- What it captures -->
+  <section>
+    <h2>What it captures per click</h2>
+    <p>Every element you click during recording gets a full context snapshot. Not just the selector. The computed styles that matter for design critique: spacing, colors, typography, shadows, borders. Your agent gets everything it needs to understand what's wrong and fix it.</p>
+    <div class="feat-grid">
+      <div class="feat-card"><h4>Selector</h4><p>Unique CSS selector path. ID, data-testid, classes, nth-child fallback.</p></div>
+      <div class="feat-card"><h4>Styles</h4><p>25+ computed properties. Spacing, colors, type, shadows, borders, layout.</p></div>
+      <div class="feat-card"><h4>Context</h4><p>Tag name, text content, bounding box, position on page.</p></div>
+    </div>
+  </section>
+
+  <!-- Sentiment -->
+  <section>
+    <h2>Automatic sentiment detection</h2>
+    <p>TAPE classifies each comment by analyzing your words. "This padding is too aggressive" gets flagged as an issue. "Love this shadow" gets flagged as positive (keep as-is). "Why is this centered?" gets flagged as a question. Your agent knows which comments need action and which are approvals.</p>
+    <div class="feat-grid">
+      <div class="feat-card"><h4 style="color:var(--red)">Issue</h4><p>"too much", "wrong", "fix", "ugly", "broken", "aggressive"</p></div>
+      <div class="feat-card"><h4 style="color:var(--green)">Positive</h4><p>"love", "great", "perfect", "keep", "clean", "solid"</p></div>
+      <div class="feat-card"><h4 style="color:var(--yellow)">Question</h4><p>"why", "should", "could", "is this", "what if"</p></div>
+    </div>
+  </section>
+
+  <!-- Export -->
+  <section>
+    <h2>The agent instructions format</h2>
+    <p>The primary export. Issues grouped first so your agent fixes them. Positives listed as "keep as-is" so the agent doesn't touch what works. Relevant computed styles attached inline so the agent knows the current values.</p>
+<pre style="font-size:10.5px;line-height:1.55">&lt;design_critique&gt;
+&lt;!-- URL: https://app.dashflow.io — 6 comments, 0m 34s --&gt;
+
+## Issues to fix (3)
+
+- **h3.hero-title**: This font weight is way too heavy for
+  a subheading (current: font-weight: 800, line-height: 1.35)
+- **button.cta-primary**: The padding is too aggressive,
+  needs to breathe (current: padding: 7px 18px)
+- **p.footer-text**: This is barely readable, too small and
+  too faded (current: font-size: 10px, color: #bbb)
+
+## Keep as-is (2)
+
+- **div.card-grid**: Love the card layout, spacing feels right
+- **div.mini-card**: The shadow on these is perfect
+
+## Questions (1)
+
+- **div.hero-section**: Should this be left-aligned instead?
+
+&lt;/design_critique&gt;</pre>
+  </section>
+
+  <!-- Code -->
+  <section>
+    <h2>One component</h2>
+<pre>&lt;<span class="comp">Tape</span> /&gt;
+
+<span class="cmt">// Or programmatically:</span>
+<span class="kw">const</span> { start, stop, exportAgent } = <span class="fn">useTape</span>()
+
+<span class="fn">start</span>()
+<span class="cmt">// ... user talks and clicks ...</span>
+<span class="kw">const</span> report = <span class="fn">stop</span>()
+<span class="kw">const</span> instructions = <span class="fn">exportAgent</span>()
+console.log(instructions)</pre>
+  </section>
+
+  <section>
+    <h2>Props</h2>
+    <table class="tbl">
+      <thead><tr><th>Prop</th><th>Default</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td>shortcut</td><td>'Alt+T'</td><td>Keyboard toggle</td></tr>
+        <tr><td>language</td><td>'en-US'</td><td>Speech recognition language</td></tr>
+        <tr><td>ignoreSelectors</td><td>['[data-tape-ui]']</td><td>Selectors to skip on click</td></tr>
+        <tr><td>onReport</td><td>—</td><td>Callback with CritiqueReport on stop</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Browser support</h2>
+    <p>Speech recognition uses the Web Speech API, available in Chrome, Edge, and Safari. Firefox has partial support. If the browser doesn't support speech recognition, TAPE still captures clicks with element context. You just won't get transcription.</p>
+  </section>
+
+  <section>
+    <h2>Disclaimer</h2>
+    <p>Experimental, open-source software. Provided as-is with no warranties. DYOR. Use at your own risk. The author assumes zero liability.</p>
+  </section>
+
+  <footer><p>Built by 0xDragoon. Open source under MIT. Experimental software. DYOR.</p></footer>
+</div>
+
+<script>
+const CRITIQUES = [
+  { sel:'h3.hero-title', sentiment:'negative', icon:'✗', label:'issue', color:'#ef4444', bg:'rgba(239,68,68,.08)',
+    text:'This font weight is way too heavy for a subheading. And the line height is too loose, it looks disconnected.',
+    styles:['font-weight: 800','font-size: 18px','line-height: 1.35'] },
+  { sel:'button.cta-primary', sentiment:'negative', icon:'✗', label:'issue', color:'#ef4444', bg:'rgba(239,68,68,.08)',
+    text:'The padding is too aggressive on this button. It needs to breathe more. And round those corners.',
+    styles:['padding: 7px 18px','border-radius: 3px','background: #222'] },
+  { sel:'div.card-grid', sentiment:'positive', icon:'✓', label:'positive', color:'#4ade80', bg:'rgba(74,222,128,.06)',
+    text:'Love this card layout actually. The spacing between cards feels right. Keep this exactly as is.',
+    styles:['display: flex','gap: 8px','padding: 10px'] },
+  { sel:'p.footer-text', sentiment:'negative', icon:'✗', label:'issue', color:'#ef4444', bg:'rgba(239,68,68,.08)',
+    text:'This is barely readable. Way too small and the color is too faded. Needs to be at least 12px with better contrast.',
+    styles:['font-size: 10px','color: #bbb','line-height: 1.5'] },
+];
+
+let clickCount = 0;
+let elapsed = 0;
+let timerInterval = null;
+
+function clickEl(el, idx) {
+  if (idx >= CRITIQUES.length) return;
+
+  // Mark element
+  el.classList.add('clicked');
+
+  // Start timer on first click
+  if (clickCount === 0) {
+    document.getElementById('recDot').style.animation = 'pulse 1.2s ease infinite';
+    timerInterval = setInterval(() => {
+      elapsed++;
+      const m = Math.floor(elapsed/60);
+      const s = elapsed%60;
+      document.getElementById('panelTime').textContent = `${m}:${s.toString().padStart(2,'0')}`;
+    }, 1000);
+  }
+
+  clickCount++;
+  const c = CRITIQUES[idx];
+
+  // Add comment to panel
+  const body = document.getElementById('panelBody');
+
+  // Remove the intro card on first click
+  if (clickCount === 1) body.innerHTML = '';
+
+  const comment = document.createElement('div');
+  comment.className = 'p-comment';
+  comment.style.opacity = '0';
+  comment.style.transform = 'translateY(4px)';
+  comment.innerHTML = `
+    <span class="p-badge" style="background:${c.bg};color:${c.color}">${c.icon} ${c.label}</span>
+    <div style="flex:1;min-width:0">
+      <div class="p-sel">${c.sel}</div>
+      <div class="p-txt">"${c.text}"</div>
+      <div style="margin-top:3px">${c.styles.map(s=>`<span style="font-size:7px;color:#505060;background:#111116;padding:1px 4px;border:1px solid #1c1c24;border-radius:2px;margin-right:2px">${s}</span>`).join('')}</div>
+    </div>
+    <span class="p-time">${clickCount * 8}s</span>
+  `;
+  body.appendChild(comment);
+
+  // Animate in
+  requestAnimationFrame(() => {
+    comment.style.transition = 'all .3s ease';
+    comment.style.opacity = '1';
+    comment.style.transform = 'translateY(0)';
+  });
+
+  // After all clicks, show export
+  if (clickCount === CRITIQUES.length) {
+    clearInterval(timerInterval);
+    document.getElementById('recDot').style.animation = 'none';
+    document.getElementById('recDot').style.background = '#505060';
+
+    setTimeout(() => {
+      const exportCard = document.createElement('div');
+      exportCard.className = 'p-card';
+      exportCard.style.opacity = '0';
+      exportCard.innerHTML = `
+        <div class="p-card-title">Agent instructions</div>
+        <div class="p-export">&lt;design_critique&gt;
+
+## Issues to fix (3)
+
+- **h3.hero-title**: Font weight too heavy
+  (font-weight: 800, line-height: 1.35)
+- **button.cta-primary**: Padding too aggressive
+  (padding: 7px 18px, border-radius: 3px)
+- **p.footer-text**: Barely readable, too small
+  (font-size: 10px, color: #bbb)
+
+## Keep as-is (1)
+
+- **div.card-grid**: Card layout is good
+
+&lt;/design_critique&gt;</div>
+      `;
+      body.appendChild(exportCard);
+      requestAnimationFrame(() => {
+        exportCard.style.transition = 'opacity .4s ease';
+        exportCard.style.opacity = '1';
+      });
+    }, 600);
+  }
+
+  body.scrollTop = body.scrollHeight;
+}
+
+function copyInstall() {
+  navigator.clipboard.writeText('npm install @dragoon0x/tapeui').then(() => {
+    const t = document.getElementById('copyTag');
+    if(t){t.textContent='copied!';t.style.color='var(--bright)';setTimeout(()=>{t.textContent='copy';t.style.color=''},2000)}
+  });
+}
+</script>
+<style>@keyframes pulse{0%,100%{opacity:1}50%{opacity:.3}}</style>
+</body>
+</html>
