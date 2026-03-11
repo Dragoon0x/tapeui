@@ -128,7 +128,7 @@
   <a href="#" class="topbar-logo"><div class="topbar-dot"></div>TAPE</a>
   <div class="topbar-right">
     <span class="topbar-shortcut">Alt + T</span>
-    <button class="topbar-btn" onclick="copyInstall()">npm install @dragoon0x/tapeui</button>
+    <button class="topbar-btn" onclick="copyInstall()">npm install usetapeui</button>
   </div>
 </nav>
 
@@ -139,7 +139,7 @@
     <h1>Talk to your UI.<br><span>It takes notes.</span></h1>
     <p class="hero-sub">Stop typing design feedback. Hit record, start talking, click the elements that bother you. TAPE transcribes your voice, pins each comment to a CSS selector with computed styles attached, and exports a structured critique your agent can action.</p>
     <div class="hero-install" onclick="copyInstall()">
-      <span>npm install @dragoon0x/tapeui</span>
+      <span>npm install usetapeui</span>
       <span class="tag" id="copyTag">copy</span>
     </div>
   </section>
@@ -412,7 +412,7 @@ function clickEl(el, idx) {
 }
 
 function copyInstall() {
-  navigator.clipboard.writeText('npm install @dragoon0x/tapeui').then(() => {
+  navigator.clipboard.writeText('npm install usetapeui').then(() => {
     const t = document.getElementById('copyTag');
     if(t){t.textContent='copied!';t.style.color='var(--bright)';setTimeout(()=>{t.textContent='copy';t.style.color=''},2000)}
   });
