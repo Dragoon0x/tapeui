@@ -1,139 +1,215 @@
-// ─── Sentiment ───────────────────────────────────────────────
+/**
+ * usetapeui v1.0 — type definitions
+ *
+ * The data model is the contract every module respects.
+ * If you change a type here, the change ripples to recorder, reporter,
+ * exporters, persist, MCP server, and the React/Vanilla/Vue/Svelte adapters.
+ */
 
-export type Sentiment = 'positive' | 'negative' | 'neutral' | 'question'
+export type Sentiment = 'issue' | 'positive' | 'question' | 'note';
 
-// ─── Element Marker ──────────────────────────────────────────
-
-export interface Marker {
-  id: string
-  /** When the click happened (ms from recording start) */
-  timestamp: number
-  /** CSS selector */
-  selector: string
-  /** Short display selector */
-  shortSelector: string
-  /** Tag name */
-  tag: string
-  /** Bounding box at click time */
-  bounds: { x: number; y: number; w: number; h: number }
-  /** Curated computed styles */
-  styles: Record<string, string>
-  /** Text content (first 100 chars) */
-  text: string | null
+/** A click on the page during a recording. Captured as it happens. */
+export interface ClickMarker {
+  /** Time relative to recording start, in ms. */
+  t: number;
+  /** Stable selector chain for the clicked element. */
+  selector: string;
+  /** HTML tag name, lowercased. */
+  tag: string;
+  /** First 100 chars of direct text content. */
+  text: string;
+  /** Bounding rect at click time. */
+  rect: { x: number; y: number; w: number; h: number };
+  /** Computed style snapshot. Map of property → value. */
+  styles: Record<string, string>;
+  /** Optional cropped screenshot of the element as a data URL. */
+  screenshot?: string | null;
+  /** Optional source location from React/Vue/Svelte fiber walk. */
+  source?: SourceInfo | null;
+  /** Class list of the element. */
+  classes: string[];
+  /** id attribute, if present. */
+  id?: string | null;
+  /** ARIA role, if present. */
+  role?: string | null;
 }
 
-// ─── Transcript Segment ──────────────────────────────────────
-
-export interface Segment {
-  /** Transcribed text */
-  text: string
-  /** Start time (ms from recording start) */
-  startTime: number
-  /** End time */
-  endTime: number
-  /** Whether this is a final (stable) result */
-  isFinal: boolean
+/** A timestamped chunk of speech. */
+export interface TranscriptSegment {
+  /** Start time relative to recording start, in ms. */
+  t: number;
+  /** Duration in ms, best-effort. */
+  duration: number;
+  /** Final transcript text for this segment. */
+  text: string;
+  /** True if confidence ≥ threshold (0.7 by default). */
+  final: boolean;
+  /** Speech recognition confidence 0..1. */
+  confidence: number;
 }
 
-// ─── Comment (merged marker + transcript) ────────────────────
-
+/** A merged comment: one click paired with its matching transcript. */
 export interface Comment {
-  id: string
-  /** The spoken feedback */
-  transcript: string
-  /** Detected sentiment */
-  sentiment: Sentiment
-  /** Pinned element (null = general comment) */
-  marker: Marker | null
-  /** Timestamp from recording start (ms) */
-  timestamp: number
-  /** Duration of this comment (ms) */
-  duration: number
+  /** Stable id for editor operations. */
+  id: string;
+  /** Time on the recording timeline. */
+  t: number;
+  /** Comment author text (post-merge). */
+  text: string;
+  /** Click marker, if this comment has one. */
+  marker: ClickMarker | null;
+  /** Sentiment classification. */
+  sentiment: Sentiment;
+  /** Structured intent extraction. */
+  intent: Intent;
+  /** Reference resolution result (which click index this text refers to). */
+  resolvedTargetIndex: number | null;
+  /** True if user edited the comment in the editor. */
+  edited: boolean;
 }
 
-// ─── Recording Session ───────────────────────────────────────
-
-export interface Recording {
-  id: string
-  /** Page URL */
-  url: string
-  /** Page title */
-  title: string
-  /** When recording started */
-  startedAt: number
-  /** Duration in ms */
-  duration: number
-  /** All markers (clicks) */
-  markers: Marker[]
-  /** All transcript segments */
-  segments: Segment[]
-  /** Merged comments */
-  comments: Comment[]
-  /** Recording state */
-  state: 'idle' | 'recording' | 'paused' | 'stopped'
+/** Structured intent extracted from comment text. */
+export interface Intent {
+  /** What the user wants done. */
+  action: 'change' | 'add' | 'remove' | 'keep' | 'question' | 'unknown';
+  /** Which CSS-ish attribute is involved, if any. */
+  attribute: string | null;
+  /** Direction of change. */
+  direction: 'increase' | 'decrease' | 'fix' | 'replace' | null;
+  /** Subjective magnitude. */
+  magnitude: 'small' | 'medium' | 'large' | null;
+  /** True if a numeric value was extracted. */
+  hasValue: boolean;
+  /** Extracted numeric value (with unit) if any. */
+  value: string | null;
+  /** Original text. */
+  raw: string;
 }
 
-// ─── Critique Report ─────────────────────────────────────────
+/** Source location from a framework fiber walk. */
+export interface SourceInfo {
+  framework: 'react' | 'vue' | 'svelte' | 'unknown';
+  componentName: string | null;
+  fileName: string | null;
+  lineNumber: number | null;
+  columnNumber: number | null;
+}
 
+/** Detected design system context. */
+export interface TokenSystem {
+  /** Detected token vocabulary. */
+  type: 'tailwind' | 'css-vars' | 'mixed' | 'none';
+  /** Px → tailwind spacing scale. */
+  spacing: Record<string, string>;
+  /** Color string → token name. */
+  colors: Record<string, string>;
+  /** Px font-size → tailwind text class. */
+  typography: Record<string, string>;
+  /** computed value → CSS variable name. */
+  cssVars: Record<string, string>;
+  /** True if Tailwind is detected. */
+  tailwindDetected: boolean;
+  /** True if any CSS custom properties are defined on :root. */
+  cssVarsDetected: boolean;
+}
+
+/** Final report produced when a recording is stopped. */
 export interface CritiqueReport {
-  url: string
-  title: string
-  timestamp: string
-  duration: string
-  commentCount: number
-  comments: {
-    index: number
-    sentiment: Sentiment
-    transcript: string
-    selector: string | null
-    shortSelector: string | null
-    tag: string | null
-    styles: Record<string, string> | null
-    time: string
-  }[]
+  /** Schema version. Increment on breaking change. */
+  version: '1';
+  /** ISO timestamp at stop. */
+  recordedAt: number;
+  /** Duration of recording, ms. */
+  duration: number;
+  /** Page URL at recording start. */
+  url: string;
+  /** Page title at recording start. */
+  title: string;
+  /** User agent string. */
+  userAgent: string;
+  /** Viewport size at recording start. */
+  viewport: { w: number; h: number; dpr: number };
+  /** Click markers in order. */
+  markers: ClickMarker[];
+  /** Raw transcript segments in order. */
+  segments: TranscriptSegment[];
+  /** Merged comments. */
+  comments: Comment[];
+  /** Detected token system. */
+  tokens: TokenSystem | null;
 }
 
-// ─── Component Props ─────────────────────────────────────────
-
-export interface TapeProps {
-  /** Keyboard shortcut. Default: 'Alt+T' */
-  shortcut?: string
-  /** Ignore selectors. Default: ['[data-tape-ui]'] */
-  ignoreSelectors?: string[]
-  /** Language for speech recognition. Default: 'en-US' */
-  language?: string
-  /** Z-index. Default: 99999 */
-  zIndex?: number
-  /** Callback when recording stops with full report */
-  onReport?: (report: CritiqueReport) => void
+/** Configuration accepted by the React component, vanilla SDK, and adapters. */
+export interface TapeConfig {
+  /** Keyboard shortcut to toggle the panel. Default 'Alt+T'. */
+  shortcut?: string;
+  /** Speech recognition language. Default 'en-US'. */
+  language?: string;
+  /** Selectors to ignore on click. */
+  ignoreSelectors?: string[];
+  /** z-index for the floating panel. Default 99999. */
+  zIndex?: number;
+  /** Capture element screenshots on click. Default true. */
+  vision?: boolean;
+  /** Walk framework fibers to extract component + source file. Default true. */
+  sourceLink?: boolean;
+  /** Detect design tokens at session start. Default true. */
+  tokens?: boolean;
+  /** Run intent extraction after merge. Default true. */
+  intent?: boolean;
+  /** Maximum ms between a transcript segment and a click for them to be merged. Default 3000. */
+  mergeWindow?: number;
+  /** Auto-open the editor when recording stops. Default false. */
+  openEditorOnStop?: boolean;
+  /** Callback fired with the final report. */
+  onReport?: (report: CritiqueReport) => void;
+  /** Callback fired with each click captured live. */
+  onClick?: (marker: ClickMarker) => void;
+  /** Callback fired with each transcript segment captured live. */
+  onSegment?: (segment: TranscriptSegment) => void;
+  /** Theme variant for the panel. Default 'dark'. */
+  theme?: 'dark' | 'light';
+  /** Default panel position. Default 'bottom-right'. */
+  position?: 'bottom-right' | 'bottom-left' | 'top-right' | 'top-left';
 }
 
-// ─── Colors ──────────────────────────────────────────────────
-
-export const TAPE_COLORS = {
-  bg: '#0a0a0e',
-  card: '#111116',
-  card2: '#161620',
-  border: '#1c1c24',
-  border2: '#252530',
-  dim: '#505060',
-  text: '#909098',
-  bright: '#e0e0e8',
-  red: '#ef4444',
-  redBg: 'rgba(239, 68, 68, 0.08)',
-  redDim: 'rgba(239, 68, 68, 0.4)',
-  green: '#4ade80',
-  greenBg: 'rgba(74, 222, 128, 0.06)',
-  yellow: '#fbbf24',
-  yellowBg: 'rgba(251, 191, 36, 0.06)',
-  blue: '#60a5fa',
-  blueBg: 'rgba(96, 165, 250, 0.06)',
-  accent: '#ef4444',
-} as const
-
-export const SENTIMENT_CONFIG: Record<Sentiment, { color: string; bg: string; icon: string; label: string }> = {
-  positive: { color: TAPE_COLORS.green, bg: TAPE_COLORS.greenBg, icon: '✓', label: 'positive' },
-  negative: { color: TAPE_COLORS.red, bg: TAPE_COLORS.redBg, icon: '✗', label: 'issue' },
-  neutral:  { color: TAPE_COLORS.text, bg: 'rgba(144,144,152,.06)', icon: '●', label: 'note' },
-  question: { color: TAPE_COLORS.yellow, bg: TAPE_COLORS.yellowBg, icon: '?', label: 'question' },
+/** Persisted .tape file format. */
+export interface TapeFile {
+  format: 'tape';
+  version: '1';
+  report: CritiqueReport;
+  meta: {
+    generator: string;
+    generatorVersion: string;
+    createdAt: number;
+  };
 }
+
+/** Result of a verify pass against a saved session. */
+export interface VerifyReport {
+  /** Original report. */
+  source: CritiqueReport;
+  /** Per-marker verification results. */
+  results: VerifyResult[];
+  /** Total markers checked. */
+  total: number;
+  /** Markers found in current DOM. */
+  found: number;
+  /** Markers where styles changed since recording. */
+  changed: number;
+  /** Markers where styles were unchanged. */
+  unchanged: number;
+  /** Markers no longer in the DOM. */
+  missing: number;
+}
+
+export interface VerifyResult {
+  markerIndex: number;
+  selector: string;
+  status: 'unchanged' | 'changed' | 'missing';
+  /** Diffed properties: { property: { before, after } }. */
+  diff: Record<string, { before: string; after: string }>;
+}
+
+/** Public recorder lifecycle states. */
+export type RecorderState = 'idle' | 'recording' | 'stopping' | 'editing';

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "TAPE — voice + click design critiques",
+  "short_name": "TAPE",
+  "version": "1.0.0",
+  "description": "Record design critiques on any page. Voice + clicks → structured agent instructions.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "action": {
+    "default_title": "Toggle TAPE",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["vanilla.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

@@ -1,305 +1,420 @@
-import React, { useState, useEffect, useRef } from 'react'
-import type { Recording, Comment, CritiqueReport } from '../types'
-import { TAPE_COLORS as C, SENTIMENT_CONFIG } from '../types'
-import { exportMarkdown, exportAgentInstructions, exportJSON } from '../core/reporter'
+/**
+ * Panel: the floating recording surface.
+ *
+ * Tabs:
+ *   record  → live recording controls + transcript
+ *   review  → comment list + edit inline + export
+ *   verify  → run verify against current DOM
+ *   replay  → load a .tape file and walk through it
+ *   exports → export formats: agent, prompt, markdown, json
+ */
+
+import * as React from 'react';
+import type {
+  ClickMarker,
+  Comment,
+  CritiqueReport,
+  RecorderState,
+  TapeConfig,
+  TranscriptSegment,
+  VerifyReport,
+} from '../types';
+import { Editor } from './Editor';
+import { VerifyDiff } from './VerifyDiff';
+import { palette, styles, KEYFRAMES, positions, MONO_FAMILY } from './styles';
+import {
+  exportAgent,
+  exportJson,
+  exportMarkdown,
+  exportPrompt,
+} from '../core/exporters';
+import { downloadTape, uploadTape } from '../core/persist';
+import { createReplay, type ReplayController } from '../core/replay';
+import { verifyReport } from '../core/verify';
+
+type Tab = 'record' | 'review' | 'verify' | 'replay' | 'exports';
 
 interface PanelProps {
-  recording: Recording
-  comments: Comment[]
-  report: CritiqueReport | null
-  onStart: () => void
-  onStop: () => void
-  onReset: () => void
-  onClose: () => void
-  zIndex: number
+  config: Required<TapeConfig>;
+  state: RecorderState;
+  isOpen: boolean;
+  speechAvailable: boolean;
+  liveTranscript: string;
+  liveMarkers: ClickMarker[];
+  liveSegments: TranscriptSegment[];
+  report: CritiqueReport | null;
+  onStart: () => void;
+  onStop: () => void;
+  onClose: () => void;
+  onCommentsChange: (comments: Comment[]) => void;
 }
 
-export function Panel({ recording, comments, report, onStart, onStop, onReset, onClose, zIndex }: PanelProps) {
-  const [copied, setCopied] = useState<string | null>(null)
-  const [expandedComment, setExpandedComment] = useState<string | null>(null)
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const isRecording = recording.state === 'recording'
-  const isStopped = recording.state === 'stopped'
-  const hasContent = comments.length > 0 || recording.segments.length > 0 || recording.markers.length > 0
+export function Panel(props: PanelProps): React.ReactElement {
+  const {
+    config,
+    state,
+    isOpen,
+    speechAvailable,
+    liveTranscript,
+    liveMarkers,
+    liveSegments,
+    report,
+    onStart,
+    onStop,
+    onClose,
+    onCommentsChange,
+  } = props;
 
-  // Auto-scroll timeline
-  useEffect(() => {
-    if (scrollRef.current && isRecording) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+  const [tab, setTab] = React.useState<Tab>('record');
+  const [exportFormat, setExportFormat] = React.useState<'agent' | 'prompt' | 'markdown' | 'json'>('agent');
+  const [verify, setVerify] = React.useState<VerifyReport | null>(null);
+  const [replayController, setReplayController] = React.useState<ReplayController | null>(null);
+  const [vu, setVu] = React.useState<number[]>(Array(8).fill(2));
+
+  // VU meter — animated bars during recording (purely cosmetic, deterministic).
+  React.useEffect(() => {
+    if (state !== 'recording') {
+      setVu(Array(8).fill(2));
+      return;
     }
-  }, [recording.segments.length, recording.markers.length, isRecording])
+    const id = window.setInterval(() => {
+      setVu(Array.from({ length: 8 }, () => 4 + Math.floor(Math.random() * 12)));
+    }, 140);
+    return () => clearInterval(id);
+  }, [state]);
 
-  const handleCopy = (format: 'agent' | 'markdown' | 'json') => {
-    if (!report) return
-    const text = format === 'agent' ? exportAgentInstructions(report)
-      : format === 'markdown' ? exportMarkdown(report)
-      : exportJSON(report)
-    navigator.clipboard?.writeText(text)
-    setCopied(format)
-    setTimeout(() => setCopied(null), 1500)
-  }
+  // Auto-switch to review after stop.
+  React.useEffect(() => {
+    if (state === 'idle' && report && tab === 'record') {
+      setTab('review');
+    }
+  }, [state, report, tab]);
 
-  const elapsed = recording.duration
-  const elapsedStr = `${Math.floor(elapsed / 60000)}:${Math.floor((elapsed % 60000) / 1000).toString().padStart(2, '0')}`
+  // Tear down replay when leaving the replay tab.
+  React.useEffect(() => {
+    if (tab !== 'replay' && replayController) {
+      replayController.destroy();
+      setReplayController(null);
+    }
+  }, [tab, replayController]);
+
+  if (!isOpen) return <></>;
+
+  const pos = positions[config.position] as React.CSSProperties;
+
+  const recording = state === 'recording';
+  const exportText = report
+    ? exportFormat === 'agent'
+      ? exportAgent(report)
+      : exportFormat === 'prompt'
+        ? exportPrompt(report)
+        : exportFormat === 'markdown'
+          ? exportMarkdown(report)
+          : exportJson(report)
+    : '';
+
+  const copyExport = (): void => {
+    if (!exportText) return;
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      navigator.clipboard.writeText(exportText).catch(() => {
+        fallbackCopy(exportText);
+      });
+    } else {
+      fallbackCopy(exportText);
+    }
+  };
+
+  const downloadCurrent = (): void => {
+    if (!report) return;
+    downloadTape(report);
+  };
+
+  const loadFile = async (): Promise<void> => {
+    const loaded = await uploadTape();
+    if (!loaded) return;
+    const ctl = createReplay(loaded);
+    setReplayController(ctl);
+  };
+
+  const runVerify = (): void => {
+    if (!report) return;
+    setVerify(verifyReport(report));
+  };
 
   return (
-    <div data-tape-ui style={{
-      position: 'fixed', right: 0, top: 0, bottom: 0, width: 360, zIndex,
-      background: C.bg, borderLeft: `1px solid ${C.border}`,
-      display: 'flex', flexDirection: 'column',
-      fontFamily: "'JetBrains Mono', 'SF Mono', monospace",
-      fontSize: 11, color: C.text, overflow: 'hidden',
-    }}>
-      {/* Header */}
-      <div style={{
-        display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-        padding: '8px 12px', borderBottom: `1px solid ${C.border}`,
-        background: isRecording ? 'rgba(239,68,68,.03)' : 'rgba(0,0,0,.2)', flexShrink: 0,
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          {isRecording && (
-            <span style={{
-              width: 6, height: 6, borderRadius: '50%', background: C.red,
-              animation: 'tape-pulse 1.2s ease infinite',
-            }} />
+    <>
+      <style data-tape-ui="">{KEYFRAMES}</style>
+      <div data-tape-ui="" style={{ ...styles.panel, ...pos } as React.CSSProperties}>
+        <div style={styles.header}>
+          <div style={styles.brand}>
+            <span style={styles.led(recording)} />
+            <span>TAPE</span>
+            {recording && (
+              <div style={{ ...styles.vu, marginLeft: 6 }}>
+                {vu.map((h, i) => (
+                  <div key={i} style={styles.vuBar(true, h)} />
+                ))}
+              </div>
+            )}
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+            <span style={{ fontSize: 10, color: palette.textFaint, fontFamily: MONO_FAMILY }}>
+              {config.shortcut}
+            </span>
+            <button data-tape-ui="" style={styles.closeBtn} onClick={onClose} title="Close">×</button>
+          </div>
+        </div>
+
+        <div style={{ padding: '10px 14px 0 14px' }}>
+          <div style={styles.tabs}>
+            <button data-tape-ui="" style={styles.tab(tab === 'record')} onClick={() => setTab('record')}>Record</button>
+            <button data-tape-ui="" style={styles.tab(tab === 'review')} onClick={() => setTab('review')}>Review {report ? `(${report.comments.length})` : ''}</button>
+            <button data-tape-ui="" style={styles.tab(tab === 'exports')} onClick={() => setTab('exports')}>Export</button>
+            <button data-tape-ui="" style={styles.tab(tab === 'verify')} onClick={() => setTab('verify')}>Verify</button>
+            <button data-tape-ui="" style={styles.tab(tab === 'replay')} onClick={() => setTab('replay')}>Replay</button>
+          </div>
+        </div>
+
+        <div style={styles.body}>
+          {tab === 'record' && (
+            <RecordTab
+              recording={recording}
+              speechAvailable={speechAvailable}
+              liveTranscript={liveTranscript}
+              liveMarkers={liveMarkers}
+              liveSegments={liveSegments}
+              onStart={onStart}
+              onStop={onStop}
+              vision={config.vision}
+              tokens={config.tokens}
+              sourceLink={config.sourceLink}
+            />
           )}
-          <span style={{ fontWeight: 600, fontSize: 10, letterSpacing: '.12em', textTransform: 'uppercase', color: C.bright }}>TAPE</span>
-          {(isRecording || isStopped) && (
-            <span style={{ color: C.dim, fontSize: 9, fontVariantNumeric: 'tabular-nums' }}>{elapsedStr}</span>
+
+          {tab === 'review' && (
+            report ? (
+              <Editor report={report} onChange={onCommentsChange} onClose={() => setTab('exports')} />
+            ) : (
+              <div style={styles.empty}>Record a session to start reviewing.</div>
+            )
+          )}
+
+          {tab === 'exports' && (
+            report ? (
+              <div>
+                <div style={{ display: 'flex', gap: 6, marginBottom: 10, flexWrap: 'wrap' }}>
+                  {(['agent', 'prompt', 'markdown', 'json'] as const).map((f) => (
+                    <button
+                      key={f}
+                      data-tape-ui=""
+                      style={{
+                        ...styles.iconBtn,
+                        background: exportFormat === f ? palette.accent : palette.bgRow,
+                        color: exportFormat === f ? '#0b0d10' : palette.textDim,
+                        fontWeight: exportFormat === f ? 700 : 400,
+                      }}
+                      onClick={() => setExportFormat(f)}
+                    >
+                      {f}
+                    </button>
+                  ))}
+                </div>
+                <pre data-tape-ui="" style={styles.exportBlock}>{exportText}</pre>
+                <div style={{ display: 'flex', gap: 6, marginTop: 10 }}>
+                  <button data-tape-ui="" style={styles.primaryBtn} onClick={copyExport}>Copy to clipboard</button>
+                  <button data-tape-ui="" style={styles.ghostBtn} onClick={downloadCurrent}>Save .tape</button>
+                </div>
+              </div>
+            ) : (
+              <div style={styles.empty}>Record a session to export.</div>
+            )
+          )}
+
+          {tab === 'verify' && (
+            verify ? (
+              <VerifyDiff report={verify} onClose={() => setVerify(null)} />
+            ) : (
+              <div>
+                <div style={{ ...styles.empty, paddingBottom: 16 }}>
+                  Verify checks each marker against the current DOM and shows what changed since recording.
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'center', gap: 6 }}>
+                  <button data-tape-ui="" style={styles.primaryBtn} disabled={!report} onClick={runVerify}>
+                    Run verify on current report
+                  </button>
+                </div>
+              </div>
+            )
+          )}
+
+          {tab === 'replay' && (
+            <ReplayPanel
+              controller={replayController}
+              onLoad={loadFile}
+              onLoadCurrent={() => {
+                if (!report) return;
+                const ctl = createReplay(report);
+                setReplayController(ctl);
+              }}
+              hasCurrent={!!report}
+              onDestroy={() => {
+                if (replayController) {
+                  replayController.destroy();
+                  setReplayController(null);
+                }
+              }}
+            />
           )}
         </div>
-        <button onClick={onClose} style={{
-          background: 'none', border: 'none', color: C.dim,
-          cursor: 'pointer', fontSize: 13, padding: '0 2px', lineHeight: 1,
-        }}>×</button>
-        <style>{`@keyframes tape-pulse{0%,100%{opacity:1}50%{opacity:.3}}`}</style>
+      </div>
+    </>
+  );
+}
+
+/* ---- Tab subcomponents ---- */
+
+function RecordTab(props: {
+  recording: boolean;
+  speechAvailable: boolean;
+  liveTranscript: string;
+  liveMarkers: ClickMarker[];
+  liveSegments: TranscriptSegment[];
+  onStart: () => void;
+  onStop: () => void;
+  vision: boolean;
+  tokens: boolean;
+  sourceLink: boolean;
+}): React.ReactElement {
+  const {
+    recording,
+    speechAvailable,
+    liveTranscript,
+    liveMarkers,
+    liveSegments,
+    onStart,
+    onStop,
+    vision,
+    tokens,
+    sourceLink,
+  } = props;
+
+  return (
+    <div>
+      <div style={styles.recordRow}>
+        <button
+          data-tape-ui=""
+          style={styles.recordBtn(recording)}
+          onClick={recording ? onStop : onStart}
+        >
+          {recording ? '■ Stop' : '● Record'}
+        </button>
+        <div style={styles.status}>
+          {recording
+            ? `${liveMarkers.length} clicks · ${liveSegments.length} segments`
+            : 'idle'}
+        </div>
       </div>
 
-      {/* Controls */}
-      <div style={{
-        padding: '10px 12px', borderBottom: `1px solid ${C.border}`, flexShrink: 0,
-        display: 'flex', gap: 6,
-      }}>
-        {!isRecording && !isStopped && (
-          <RecBtn label="Start Recording" color={C.red} onClick={onStart} wide />
-        )}
-        {isRecording && (
-          <RecBtn label="Stop" color={C.red} onClick={onStop} wide />
-        )}
-        {isStopped && (
-          <>
-            <RecBtn label="New Recording" color={C.bright} onClick={onReset} wide />
-          </>
-        )}
+      <div style={styles.transcript}>
+        {liveTranscript || (recording ? 'Listening…' : 'Hit record. Talk and click. Stop. Done.')}
       </div>
 
-      {/* Content */}
-      <div ref={scrollRef} style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
-        {/* Idle state */}
-        {!isRecording && !isStopped && !hasContent && (
-          <div style={{ textAlign: 'center', paddingTop: 40, color: C.dim, fontSize: 10, lineHeight: 2 }}>
-            Hit record. Start talking. Click elements.<br />
-            TAPE captures your voice and maps each<br />
-            comment to the element you clicked.<br /><br />
-            Requires microphone permission.<br />
-            Works in Chrome, Edge, Safari.
+      <div style={{ display: 'flex', gap: 8, fontSize: 10, color: palette.textFaint, fontFamily: MONO_FAMILY, flexWrap: 'wrap' }}>
+        <span style={{ color: speechAvailable ? palette.green : palette.red }}>
+          ● speech: {speechAvailable ? 'on' : 'unavailable'}
+        </span>
+        <span style={{ color: vision ? palette.green : palette.textFaint }}>
+          ● vision: {vision ? 'on' : 'off'}
+        </span>
+        <span style={{ color: sourceLink ? palette.green : palette.textFaint }}>
+          ● source-link: {sourceLink ? 'on' : 'off'}
+        </span>
+        <span style={{ color: tokens ? palette.green : palette.textFaint }}>
+          ● tokens: {tokens ? 'on' : 'off'}
+        </span>
+      </div>
+
+      {recording && liveMarkers.length > 0 && (
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 10, color: palette.textFaint, marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Captured this session
           </div>
-        )}
-
-        {/* Live recording view */}
-        {isRecording && (
-          <>
-            <Card title="Recording...">
-              <div style={{ fontSize: 9, color: C.dim, marginBottom: 6 }}>
-                {recording.markers.length} click{recording.markers.length !== 1 ? 's' : ''} · {recording.segments.filter(s => s.isFinal).length} transcript{recording.segments.filter(s => s.isFinal).length !== 1 ? 's' : ''}
-              </div>
-              <div style={{ fontSize: 9, color: C.text, lineHeight: 1.6 }}>
-                Click elements while talking. Each click gets pinned to your nearest comment.
-              </div>
-            </Card>
-
-            {/* Live transcript */}
-            {recording.segments.length > 0 && (
-              <Card title="Live transcript">
-                {recording.segments.map((seg, i) => (
-                  <div key={i} style={{
-                    padding: '3px 0', fontSize: 10, lineHeight: 1.5,
-                    color: seg.isFinal ? C.bright : C.dim,
-                    fontStyle: seg.isFinal ? 'normal' : 'italic',
-                  }}>
-                    <span style={{ color: C.dim, fontSize: 8, marginRight: 6 }}>
-                      {Math.floor(seg.startTime / 1000)}s
-                    </span>
-                    {seg.text}
-                  </div>
-                ))}
-              </Card>
-            )}
-
-            {/* Live markers */}
-            {recording.markers.length > 0 && (
-              <Card title="Click markers">
-                {recording.markers.map(m => (
-                  <div key={m.id} style={{
-                    display: 'flex', alignItems: 'center', gap: 6,
-                    padding: '3px 6px', marginBottom: 2,
-                    background: C.card2, borderRadius: 4,
-                  }}>
-                    <span style={{ color: C.red, fontSize: 8 }}>●</span>
-                    <span style={{ color: C.bright, fontSize: 9 }}>{m.shortSelector}</span>
-                    <span style={{ color: C.dim, fontSize: 8, marginLeft: 'auto' }}>
-                      {Math.floor(m.timestamp / 1000)}s
-                    </span>
-                  </div>
-                ))}
-              </Card>
-            )}
-          </>
-        )}
-
-        {/* Stopped: show merged comments */}
-        {isStopped && (
-          <>
-            {/* Stats */}
-            {report && (
-              <Card title={`${report.commentCount} comments · ${report.duration}`}>
-                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {(['negative', 'positive', 'question', 'neutral'] as const).map(s => {
-                    const count = comments.filter(c => c.sentiment === s).length
-                    if (count === 0) return null
-                    const cfg = SENTIMENT_CONFIG[s]
-                    return (
-                      <span key={s} style={{
-                        display: 'flex', alignItems: 'center', gap: 3,
-                        padding: '2px 6px', borderRadius: 3,
-                        background: cfg.bg, color: cfg.color,
-                        fontSize: 8, textTransform: 'uppercase', letterSpacing: '.04em',
-                      }}>
-                        <span>{cfg.icon}</span> {count} {cfg.label}
-                      </span>
-                    )
-                  })}
+          {liveMarkers.slice(-5).reverse().map((m, i) => (
+            <div key={i} style={{ ...styles.commentRow, padding: 8, marginBottom: 6 }}>
+              <div style={styles.selector}>{m.selector}</div>
+              {m.source?.componentName && (
+                <div style={{ fontSize: 10, color: palette.textFaint, marginTop: 4, fontFamily: MONO_FAMILY }}>
+                  ← {m.source.componentName}
+                  {m.source.fileName ? ` (${m.source.fileName.split('/').slice(-2).join('/')})` : ''}
                 </div>
-              </Card>
-            )}
-
-            {/* Export buttons */}
-            <div style={{ display: 'flex', gap: 4, marginBottom: 8 }}>
-              <CopyBtn label={copied === 'agent' ? 'Copied!' : 'Agent'} active={copied === 'agent'} primary onClick={() => handleCopy('agent')} />
-              <CopyBtn label={copied === 'markdown' ? 'Copied!' : 'Markdown'} active={copied === 'markdown'} onClick={() => handleCopy('markdown')} />
-              <CopyBtn label={copied === 'json' ? 'Copied!' : 'JSON'} active={copied === 'json'} onClick={() => handleCopy('json')} />
+              )}
             </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
 
-            {/* Comment list */}
-            {comments.map(comment => {
-              const cfg = SENTIMENT_CONFIG[comment.sentiment]
-              const expanded = expandedComment === comment.id
+function ReplayPanel(props: {
+  controller: ReplayController | null;
+  onLoad: () => void;
+  onLoadCurrent: () => void;
+  hasCurrent: boolean;
+  onDestroy: () => void;
+}): React.ReactElement {
+  const { controller, onLoad, onLoadCurrent, hasCurrent, onDestroy } = props;
+  const [tick, setTick] = React.useState(0);
 
-              return (
-                <div key={comment.id} style={{
-                  background: C.card, border: `1px solid ${expanded ? C.border2 : C.border}`,
-                  borderRadius: 6, marginBottom: 3, overflow: 'hidden',
-                }}>
-                  <div onClick={() => setExpandedComment(expanded ? null : comment.id)} style={{
-                    display: 'flex', alignItems: 'flex-start', gap: 6,
-                    padding: '6px 8px', cursor: 'pointer',
-                  }}>
-                    <span style={{
-                      background: cfg.bg, color: cfg.color,
-                      padding: '1px 5px', borderRadius: 3, flexShrink: 0,
-                      fontSize: 7, textTransform: 'uppercase', letterSpacing: '.06em', marginTop: 1,
-                    }}>{cfg.icon} {cfg.label}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      {comment.marker && (
-                        <div style={{ color: C.blue, fontSize: 9, marginBottom: 2 }}>
-                          {comment.marker.shortSelector}
-                        </div>
-                      )}
-                      <div style={{ color: C.bright, fontSize: 10, lineHeight: 1.5 }}>
-                        "{comment.transcript}"
-                      </div>
-                    </div>
-                    <span style={{ color: C.dim, fontSize: 8, flexShrink: 0 }}>
-                      {Math.floor(comment.timestamp / 1000)}s
-                    </span>
-                  </div>
+  const refresh = (): void => setTick((n) => n + 1);
 
-                  {expanded && comment.marker && (
-                    <div style={{ padding: '0 8px 8px', borderTop: `1px solid ${C.border}` }}>
-                      <div style={{ fontSize: 8, color: C.dim, marginTop: 6, wordBreak: 'break-all', marginBottom: 4 }}>
-                        {comment.marker.selector}
-                      </div>
-                      {Object.entries(comment.marker.styles).slice(0, 8).map(([k, v]) => (
-                        <div key={k} style={{
-                          display: 'flex', justifyContent: 'space-between', padding: '1px 4px',
-                          fontSize: 9,
-                        }}>
-                          <span style={{ color: C.dim }}>{k.replace(/([A-Z])/g, '-$1').toLowerCase()}</span>
-                          <span style={{ color: C.text }}>{v}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )
-            })}
-
-            {/* Agent preview */}
-            {report && (
-              <Card title="Agent instructions preview">
-                <pre style={{
-                  background: '#080810', borderRadius: 4, padding: 8,
-                  fontSize: 8, lineHeight: 1.6, color: C.dim,
-                  whiteSpace: 'pre-wrap', wordBreak: 'break-word',
-                  maxHeight: 300, overflow: 'auto', margin: 0,
-                }}>
-                  {exportAgentInstructions(report)}
-                </pre>
-              </Card>
-            )}
-          </>
-        )}
+  if (!controller) {
+    return (
+      <div>
+        <div style={{ ...styles.empty, paddingBottom: 16 }}>
+          Replay walks through a saved session. The element from each comment lights up on the page in order.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button data-tape-ui="" style={styles.primaryBtn} disabled={!hasCurrent} onClick={onLoadCurrent}>
+            Replay current report
+          </button>
+          <button data-tape-ui="" style={styles.ghostBtn} onClick={onLoad}>
+            Load .tape file
+          </button>
+        </div>
       </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ fontSize: 12, color: palette.textDim, marginBottom: 10, fontFamily: MONO_FAMILY }}>
+        Step {controller.current + 1} / {controller.total}
+      </div>
+      <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+        <button data-tape-ui="" style={styles.ghostBtn} onClick={() => { controller.prev(); refresh(); }}>← Prev</button>
+        <button data-tape-ui="" style={styles.primaryBtn} onClick={() => { controller.next(); refresh(); }}>Next →</button>
+        <button data-tape-ui="" style={styles.ghostBtn} onClick={() => { controller.play(1500, () => refresh()); refresh(); }}>▶ Play</button>
+        <button data-tape-ui="" style={styles.ghostBtn} onClick={() => { controller.stop(); refresh(); }}>Pause</button>
+        <button data-tape-ui="" style={styles.dangerBtn} onClick={onDestroy}>Exit</button>
+      </div>
+      <div style={styles.hint}>The amber outline on the page tracks the current step.</div>
     </div>
-  )
+  );
 }
 
-// ─── Shared ──────────────────────────────────────────────────
-
-function Card({ children, title }: { children: React.ReactNode; title?: string }) {
-  return (
-    <div style={{
-      background: C.card, border: `1px solid ${C.border}`,
-      borderRadius: 6, padding: 10, marginBottom: 8,
-    }}>
-      {title && <div style={{ fontSize: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '.1em', color: C.dim, marginBottom: 6 }}>{title}</div>}
-      {children}
-    </div>
-  )
-}
-
-function RecBtn({ label, color, onClick, wide }: { label: string; color: string; onClick: () => void; wide?: boolean }) {
-  return (
-    <button onClick={onClick} style={{
-      padding: '6px 12px', background: `${color}12`,
-      border: `1px solid ${color}25`, borderRadius: 5,
-      color, fontFamily: 'inherit', fontSize: 9,
-      cursor: 'pointer', textTransform: 'uppercase', letterSpacing: '.06em',
-      width: wide ? '100%' : undefined, transition: 'all .12s',
-    }}>{label}</button>
-  )
-}
-
-function CopyBtn({ label, onClick, active, primary }: { label: string; onClick: () => void; active?: boolean; primary?: boolean }) {
-  const color = active ? C.green : primary ? C.red : C.text
-  return (
-    <button onClick={onClick} style={{
-      flex: 1, padding: '5px 10px',
-      background: active ? C.greenBg : primary ? C.redBg : C.card,
-      border: `1px solid ${active ? C.green + '30' : primary ? C.red + '25' : C.border}`,
-      borderRadius: 5, color,
-      fontFamily: 'inherit', fontSize: 8, cursor: 'pointer',
-      textTransform: 'uppercase', letterSpacing: '.04em', transition: 'all .15s',
-    }}>{label}</button>
-  )
+function fallbackCopy(text: string): void {
+  if (typeof document === 'undefined') return;
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+  } catch {
+    // ignore
+  }
+  document.body.removeChild(ta);
 }

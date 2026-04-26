@@ -1,289 +1,253 @@
-import type { Marker, Segment, Recording } from '../types'
+/**
+ * Recorder: the live capture engine.
+ *
+ * Two parallel streams, both timestamped against the same recording start:
+ *   - speech: SpeechRecognition events → TranscriptSegment[]
+ *   - clicks: capture-phase click listener → ClickMarker[]
+ *
+ * Vision (screenshot) and source (fiber walk) attach to each ClickMarker
+ * asynchronously so they never block the click flow.
+ */
 
-type RecorderListener = (recording: Recording) => void
+import type { ClickMarker, RecorderState, TranscriptSegment } from '../types';
+import { buildSelector, directText, isIgnored, pickStyles, warn } from './utils';
+import { captureElement } from './vision';
+import { findSource } from './source';
 
-let markerCounter = 0
-let recCounter = 0
-function uid(prefix: string): string { return `${prefix}_${++markerCounter}_${Date.now()}` }
+interface RecorderOptions {
+  language: string;
+  ignoreSelectors: string[];
+  vision: boolean;
+  sourceLink: boolean;
+  onMarker?: (marker: ClickMarker) => void;
+  onSegment?: (segment: TranscriptSegment) => void;
+}
 
-const STYLE_KEYS = [
-  'display', 'position', 'width', 'height',
-  'padding', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft',
-  'margin', 'marginTop', 'marginRight', 'marginBottom', 'marginLeft',
-  'gap', 'backgroundColor', 'color', 'borderColor', 'borderWidth', 'borderRadius',
-  'boxShadow', 'opacity', 'fontSize', 'fontWeight', 'fontFamily', 'lineHeight',
-  'textAlign', 'transform',
-]
+interface SpeechRecognitionLike {
+  start: () => void;
+  stop: () => void;
+  abort: () => void;
+  continuous: boolean;
+  interimResults: boolean;
+  lang: string;
+  onresult: ((event: any) => void) | null;
+  onerror: ((event: any) => void) | null;
+  onend: (() => void) | null;
+  onstart: (() => void) | null;
+}
 
-const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'LINK', 'META', 'NOSCRIPT'])
+declare global {
+  interface Window {
+    SpeechRecognition?: new () => SpeechRecognitionLike;
+    webkitSpeechRecognition?: new () => SpeechRecognitionLike;
+  }
+}
 
 export class Recorder {
-  private recording: Recording
-  private listeners = new Set<RecorderListener>()
-  private recognition: any = null
-  private startTime = 0
-  private ignoreSelectors: string[]
-  private language: string
-  private clickHandler: ((e: MouseEvent) => void) | null = null
+  private state: RecorderState = 'idle';
+  private startedAt = 0;
+  private markers: ClickMarker[] = [];
+  private segments: TranscriptSegment[] = [];
+  private clickHandler: ((e: MouseEvent) => void) | null = null;
+  private recognition: SpeechRecognitionLike | null = null;
+  private speechAvailable = false;
+  private restartGuard = false;
+  private restartCount = 0;
+  private maxRestarts = 50;
+  private opts: RecorderOptions;
 
-  constructor(language = 'en-US', ignoreSelectors: string[] = ['[data-tape-ui]']) {
-    this.language = language
-    this.ignoreSelectors = ignoreSelectors
-    this.recording = this.freshRecording()
+  constructor(opts: RecorderOptions) {
+    this.opts = opts;
   }
 
-  // ─── Subscription ──────────────────────────────────────────
-
-  subscribe(listener: RecorderListener) {
-    this.listeners.add(listener)
-    return () => this.listeners.delete(listener)
+  getState(): RecorderState {
+    return this.state;
   }
 
-  private notify() {
-    const snapshot = { ...this.recording, markers: [...this.recording.markers], segments: [...this.recording.segments], comments: [...this.recording.comments] }
-    this.listeners.forEach(l => l(snapshot))
+  isSpeechAvailable(): boolean {
+    return this.speechAvailable;
   }
 
-  getRecording(): Recording { return this.recording }
+  start(): void {
+    if (this.state !== 'idle') return;
+    this.state = 'recording';
+    this.startedAt = Date.now();
+    this.markers = [];
+    this.segments = [];
+    this.restartCount = 0;
+    this.attachClickCapture();
+    this.startSpeech();
+  }
 
-  // ─── Controls ──────────────────────────────────────────────
-
-  start(): boolean {
-    if (this.recording.state === 'recording') return false
-
-    // Check Speech Recognition support
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-    if (!SpeechRecognition) {
-      console.warn('TAPE: SpeechRecognition not supported in this browser')
-      // Still allow recording clicks without voice
+  /** Stop, return raw streams, transition to idle. */
+  stop(): { markers: ClickMarker[]; segments: TranscriptSegment[]; duration: number } {
+    if (this.state === 'idle') {
+      return { markers: [], segments: [], duration: 0 };
     }
+    this.state = 'stopping';
+    this.detachClickCapture();
+    this.stopSpeech();
+    const duration = Date.now() - this.startedAt;
+    const out = {
+      markers: this.markers.slice(),
+      segments: this.segments.slice(),
+      duration,
+    };
+    this.state = 'idle';
+    return out;
+  }
 
-    this.recording = this.freshRecording()
-    this.recording.state = 'recording'
-    this.startTime = Date.now()
-    this.recording.startedAt = this.startTime
+  /** Hard cleanup; safe to call any time. */
+  destroy(): void {
+    this.detachClickCapture();
+    this.stopSpeech();
+    this.markers = [];
+    this.segments = [];
+    this.state = 'idle';
+  }
 
-    // Start speech recognition
-    if (SpeechRecognition) {
-      this.recognition = new SpeechRecognition()
-      this.recognition.continuous = true
-      this.recognition.interimResults = true
-      this.recognition.lang = this.language
-      this.recognition.maxAlternatives = 1
+  /* -------------------- click capture -------------------- */
 
-      this.recognition.onresult = (event: any) => {
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-          const result = event.results[i]
-          const text = result[0].transcript.trim()
-          if (!text) continue
-
-          const now = Date.now() - this.startTime
-          const existing = this.recording.segments.find(s => !s.isFinal && s.startTime === (this.recording.segments.filter(ss => !ss.isFinal)[0]?.startTime ?? now))
-
-          if (result.isFinal) {
-            // Replace interim with final
-            this.recording.segments = this.recording.segments.filter(s => s.isFinal)
-            this.recording.segments.push({
-              text,
-              startTime: now - estimateDuration(text),
-              endTime: now,
-              isFinal: true,
-            })
-          } else {
-            // Update interim
-            const interims = this.recording.segments.filter(s => !s.isFinal)
-            if (interims.length === 0) {
-              this.recording.segments.push({
-                text,
-                startTime: now,
-                endTime: now,
-                isFinal: false,
-              })
-            } else {
-              interims[interims.length - 1].text = text
-              interims[interims.length - 1].endTime = now
-            }
-          }
-
-          this.recording.duration = Date.now() - this.startTime
-          this.notify()
-        }
-      }
-
-      this.recognition.onerror = (event: any) => {
-        if (event.error === 'no-speech' || event.error === 'aborted') return
-        console.warn('TAPE speech error:', event.error)
-      }
-
-      this.recognition.onend = () => {
-        // Auto-restart if still recording
-        if (this.recording.state === 'recording' && this.recognition) {
-          try { this.recognition.start() } catch {}
-        }
-      }
-
-      try { this.recognition.start() } catch (e) {
-        console.warn('TAPE: Could not start speech recognition:', e)
-      }
-    }
-
-    // Start click capture
+  private attachClickCapture(): void {
     this.clickHandler = (e: MouseEvent) => {
-      if (this.recording.state !== 'recording') return
-      const target = e.target as Element
-      if (!target || !(target instanceof HTMLElement)) return
+      if (this.state !== 'recording') return;
+      const el = e.target as Element | null;
+      if (!el || el.nodeType !== 1) return;
+      if (isIgnored(el, this.opts.ignoreSelectors)) return;
 
-      // Skip own UI
-      for (const sel of this.ignoreSelectors) {
-        try { if (target.matches(sel) || target.closest(sel)) return } catch {}
+      const t = Date.now() - this.startedAt;
+      const rect = el.getBoundingClientRect();
+      const marker: ClickMarker = {
+        t,
+        selector: buildSelector(el),
+        tag: el.tagName.toLowerCase(),
+        text: directText(el),
+        rect: { x: rect.x, y: rect.y, w: rect.width, h: rect.height },
+        styles: pickStyles(el),
+        screenshot: null,
+        source: this.opts.sourceLink ? findSource(el) : null,
+        classes: (el.getAttribute('class') || '').split(/\s+/).filter(Boolean).slice(0, 10),
+        id: el.id || null,
+        role: el.getAttribute('role'),
+      };
+
+      this.markers.push(marker);
+      this.opts.onMarker?.(marker);
+
+      // Vision capture is async; attach when ready, never block.
+      if (this.opts.vision) {
+        captureElement(el)
+          .then((url) => {
+            marker.screenshot = url;
+          })
+          .catch(() => {
+            marker.screenshot = null;
+          });
       }
-      if (SKIP_TAGS.has(target.tagName)) return
-
-      e.preventDefault()
-      e.stopPropagation()
-
-      const marker = this.captureMarker(target)
-      this.recording.markers.push(marker)
-      this.recording.duration = Date.now() - this.startTime
-      this.notify()
-    }
-
-    document.addEventListener('click', this.clickHandler, true)
-    this.notify()
-    return true
+    };
+    // capture phase so we run before app handlers stop propagation
+    document.addEventListener('click', this.clickHandler, true);
   }
 
-  stop(): Recording {
-    if (this.recording.state !== 'recording' && this.recording.state !== 'paused') return this.recording
-
-    this.recording.state = 'stopped'
-    this.recording.duration = Date.now() - this.startTime
-
-    // Stop speech recognition
-    if (this.recognition) {
-      try { this.recognition.stop() } catch {}
-      this.recognition = null
-    }
-
-    // Remove click handler
+  private detachClickCapture(): void {
     if (this.clickHandler) {
-      document.removeEventListener('click', this.clickHandler, true)
-      this.clickHandler = null
+      document.removeEventListener('click', this.clickHandler, true);
+      this.clickHandler = null;
     }
-
-    // Clean up: remove interim segments
-    this.recording.segments = this.recording.segments.filter(s => s.isFinal)
-
-    this.notify()
-    return this.recording
   }
 
-  reset(): void {
-    this.stop()
-    this.recording = this.freshRecording()
-    this.notify()
+  /* -------------------- speech recognition -------------------- */
+
+  private startSpeech(): void {
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) {
+      this.speechAvailable = false;
+      warn('SpeechRecognition not available in this browser. Click capture still active.');
+      return;
+    }
+    try {
+      const rec = new SR();
+      rec.continuous = true;
+      rec.interimResults = true;
+      rec.lang = this.opts.language;
+      rec.onresult = (event: any) => this.handleSpeechResult(event);
+      rec.onerror = (event: any) => {
+        // 'no-speech' fires constantly during silence; ignore quietly.
+        if (event && event.error && event.error !== 'no-speech' && event.error !== 'aborted') {
+          warn('speech error:', event.error);
+        }
+      };
+      rec.onend = () => {
+        // Auto-restart when the engine ends mid-recording.
+        if (
+          this.state === 'recording' &&
+          !this.restartGuard &&
+          this.restartCount < this.maxRestarts
+        ) {
+          this.restartCount++;
+          this.restartGuard = true;
+          setTimeout(() => {
+            this.restartGuard = false;
+            try {
+              rec.start();
+            } catch {
+              // ignore (already started)
+            }
+          }, 250);
+        }
+      };
+      this.recognition = rec;
+      this.speechAvailable = true;
+      try {
+        rec.start();
+      } catch (err) {
+        warn('failed to start speech recognition', err);
+      }
+    } catch (err) {
+      this.speechAvailable = false;
+      warn('failed to construct SpeechRecognition', err);
+    }
   }
 
-  // ─── Marker Capture ────────────────────────────────────────
-
-  private captureMarker(el: HTMLElement): Marker {
-    const cs = window.getComputedStyle(el)
-    const rect = el.getBoundingClientRect()
-
-    const styles: Record<string, string> = {}
-    for (const key of STYLE_KEYS) {
-      const val = (cs as any)[key]
-      if (val && val !== '' && val !== 'none' && val !== 'normal' && val !== 'auto' && val !== '0px' && val !== 'rgba(0, 0, 0, 0)') {
-        styles[key] = val
+  private stopSpeech(): void {
+    if (!this.recognition) return;
+    try {
+      this.recognition.onend = null;
+      this.recognition.onresult = null;
+      this.recognition.onerror = null;
+      this.recognition.stop();
+    } catch {
+      try {
+        this.recognition.abort();
+      } catch {
+        // ignore
       }
     }
+    this.recognition = null;
+  }
 
-    // Collapse padding/margin
-    styles.padding = collapse(cs.paddingTop, cs.paddingRight, cs.paddingBottom, cs.paddingLeft)
-    styles.margin = collapse(cs.marginTop, cs.marginRight, cs.marginBottom, cs.marginLeft)
-    delete styles.paddingTop; delete styles.paddingRight; delete styles.paddingBottom; delete styles.paddingLeft
-    delete styles.marginTop; delete styles.marginRight; delete styles.marginBottom; delete styles.marginLeft
-
-    if (styles.fontFamily) styles.fontFamily = styles.fontFamily.split(',')[0].trim().replace(/"/g, '')
-
-    let text: string | null = null
-    for (const child of el.childNodes) {
-      if (child.nodeType === Node.TEXT_NODE) {
-        const t = child.textContent?.trim()
-        if (t) text = (text || '') + t
+  private handleSpeechResult(event: any): void {
+    if (this.state !== 'recording') return;
+    const t = Date.now() - this.startedAt;
+    if (!event || !event.results) return;
+    for (let i = event.resultIndex; i < event.results.length; i++) {
+      const res = event.results[i];
+      if (!res || !res[0]) continue;
+      const transcript = (res[0].transcript || '').trim();
+      const confidence = typeof res[0].confidence === 'number' ? res[0].confidence : 0.7;
+      if (!transcript) continue;
+      if (res.isFinal) {
+        const seg: TranscriptSegment = {
+          t,
+          duration: 0,
+          text: transcript,
+          final: true,
+          confidence,
+        };
+        this.segments.push(seg);
+        this.opts.onSegment?.(seg);
       }
-    }
-    if (text && text.length > 100) text = text.slice(0, 100) + '...'
-
-    return {
-      id: uid('mk'),
-      timestamp: Date.now() - this.startTime,
-      selector: getSelector(el),
-      shortSelector: getShortSelector(el),
-      tag: el.tagName.toLowerCase(),
-      bounds: { x: Math.round(rect.x), y: Math.round(rect.y), w: Math.round(rect.width), h: Math.round(rect.height) },
-      styles,
-      text,
+      // interim results are ignored for the report; the panel can read live transcript via callbacks.
     }
   }
-
-  // ─── Helpers ───────────────────────────────────────────────
-
-  private freshRecording(): Recording {
-    return {
-      id: `rec_${++recCounter}_${Date.now()}`,
-      url: typeof window !== 'undefined' ? window.location.href : '',
-      title: typeof document !== 'undefined' ? document.title : '',
-      startedAt: 0,
-      duration: 0,
-      markers: [],
-      segments: [],
-      comments: [],
-      state: 'idle',
-    }
-  }
-}
-
-// ─── Utilities ───────────────────────────────────────────────
-
-function estimateDuration(text: string): number {
-  // Rough: ~150 words per minute = ~2.5 words/sec
-  const words = text.split(/\s+/).length
-  return Math.max(500, (words / 2.5) * 1000)
-}
-
-function collapse(t: string, r: string, b: string, l: string): string {
-  if (t === r && r === b && b === l) return t
-  if (t === b && r === l) return `${t} ${r}`
-  return `${t} ${r} ${b} ${l}`
-}
-
-function getSelector(el: Element): string {
-  if (el.id) return `#${CSS.escape(el.id)}`
-  const testId = el.getAttribute('data-testid')
-  if (testId) return `[data-testid="${testId}"]`
-  const path: string[] = []
-  let current: Element | null = el
-  while (current && current !== document.documentElement) {
-    let seg = current.tagName.toLowerCase()
-    if (current.id) { path.unshift(`#${CSS.escape(current.id)}`); break }
-    const classes = Array.from(current.classList).filter(c => c.length > 2 && !/^[a-z]{1,3}-[a-zA-Z0-9_-]{5,}$/.test(c)).slice(0, 2)
-    if (classes.length) seg += '.' + classes.map(c => CSS.escape(c)).join('.')
-    const parent = current.parentElement
-    if (parent) {
-      const siblings = Array.from(parent.children).filter(s => s.tagName === current!.tagName)
-      if (siblings.length > 1) seg += `:nth-child(${siblings.indexOf(current) + 1})`
-    }
-    path.unshift(seg)
-    current = current.parentElement
-  }
-  return path.join(' > ')
-}
-
-function getShortSelector(el: Element): string {
-  const tag = el.tagName.toLowerCase()
-  if (el.id) return `${tag}#${el.id}`
-  const classes = Array.from(el.classList).filter(c => c.length > 2).slice(0, 2)
-  if (classes.length) return `${tag}.${classes.join('.')}`
-  return tag
 }
