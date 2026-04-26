@@ -190,6 +190,8 @@ Or as an action:
 
 Paste it into Cursor rules, `CLAUDE.md`, Copilot instructions, or any system prompt. The agent reads it and edits the right files.
 
+> ⚠️ Treat agent outputs as suggestions, not commitments. Always review the changes an AI agent makes to your codebase before merging. TAPE structures the input — it does not validate the output.
+
 ## .tape file format
 
 A `.tape.json` is a stable JSON envelope:
@@ -212,6 +214,8 @@ downloadTape(report)             // browser download
 const json = serializeTape(report)
 const back = parseTape(json)
 ```
+
+> ⚠️ `.tape.json` files may contain page URLs, transcripts of what you said, screenshots of what you clicked, and source-file paths. Treat them as you would any other captured user data: store them appropriately, do not commit them to public repos by default, and review what's in them before sharing.
 
 ## Replay
 
@@ -284,6 +288,8 @@ The MCP SDK is an optional peer (`@modelcontextprotocol/sdk`). It's only needed 
 
 The `extension/` folder contains a Manifest v3 Chrome extension that injects the vanilla bundle into any page you visit. Load it as an unpacked extension from `chrome://extensions` to TAPE sites that don't ship the SDK themselves.
 
+> ⚠️ The extension can run on any URL pattern you allow it to. Only enable it on pages you trust, and never use it on banking, healthcare, or other sensitive sites. Review the source in `extension/` before loading it.
+
 ## Configuration
 
 | Prop                  | Default              | Description                                                              |
@@ -312,12 +318,33 @@ Vision uses `html-to-image`, which works in all evergreen browsers.
 
 ## Stability
 
-This is `1.0.0`. The schema version on `CritiqueReport` and `TapeFile` is `'1'`; future breaking changes will bump it and ship a migrator. Public API: `Tape`, `useTape`, the vanilla `Tape` class, `mountTape` for Vue/Svelte, and the named exports listed above.
+This is `1.0.0` of an experimental project. The schema version on `CritiqueReport` and `TapeFile` is `'1'`; future breaking changes will bump it and ship a migrator. Public API: `Tape`, `useTape`, the vanilla `Tape` class, `mountTape` for Vue/Svelte, and the named exports listed above. Treat all APIs as subject to change.
+
+## Contributing
+
+Issues, ideas, and pull requests welcome. This is a learning-in-public project — feedback and improvements are how it gets better. Please be respectful, and don't expect commercial-grade support response times.
 
 ## License
 
 MIT. Built by [Dragoon0x](https://github.com/Dragoon0x).
 
-## Disclaimer
+The MIT license includes the standard "no warranty" and "no liability" clauses. Read it.
 
-Software is provided as-is. No warranties. Use at your own risk.
+---
+
+## ⚠️ Disclaimer — please read before using
+
+**This project is experimental and provided strictly for educational and research purposes.** It is a personal exploration into how voice, click, and vision data can be structured for AI coding agents. It is not a finished commercial product and comes with no guarantees of any kind.
+
+- **DYOR (do your own research).** Read the source. Understand what it does before integrating it into anything you care about.
+- **Experimental software.** APIs, data formats, behavior, and dependencies may change without notice between versions. The schema version on `CritiqueReport` and `TapeFile` exists precisely so this can evolve.
+- **Educational purpose only.** This is a learning-in-public project. It is not audited, not certified, not vetted by any third party, and is not intended for use in production systems, regulated environments, safety-critical contexts, or anywhere reliability of an AI-agent pipeline matters.
+- **Use at your own risk.** The author accepts no liability for any consequence arising from use, misuse, integration, deployment, modification, or distribution of this code. See the LICENSE for the full legal text.
+- **Privacy.** TAPE captures speech, clicks, screenshots, and source-file paths from the page it runs on. You are responsible for understanding what gets captured, where the resulting `.tape.json` files are stored, and who has access to them. Do not run TAPE on pages containing sensitive data unless you fully understand the data flow.
+- **No warranty.** The software is provided "as is", without warranty of any kind, express or implied, including but not limited to merchantability, fitness for a particular purpose, and noninfringement.
+
+By installing, importing, or otherwise using this package, you acknowledge that you have read and accepted the terms above.
+
+---
+
+**Final reminder:** This software is experimental and provided for educational and research purposes only. Do your own research. Use at your own risk. The author accepts no responsibility or liability for anything that arises from your use of this code.
